@@ -1,88 +1,97 @@
 import sys
 import numpy as np
-import os
+from multiprocessing import Pool, cpu_count
+from simple import simulate_sis   # <-- import directly!
 
-X = int(sys.argv[1])  # Number of simulations to generate
-data = []
+X = int(sys.argv[1])  # number of simulations
 
-# use 6 time points like your training script expects
 time_points = [0.25, 0.75, 0.10, 0.60, 0.50, 1.0]
 
-# realistic epidemic parameter ranges
-POP_MIN = 500
-POP_MAX = 20000
+POP_MIN, POP_MAX = 500, 20000
+GEN_MIN, GEN_MAX = 50, 500
+GAMMA_MIN, GAMMA_MAX = 0.05, 0.5
+R0_MIN, R0_MAX = 0.2, 6.0
 
-GEN_MIN = 50
-GEN_MAX = 500
 
-GAMMA_MIN = 0.05
-GAMMA_MAX = 0.5
+def run_single_sim(i):
+    print(f"[worker] starting simulation {i}")
 
-R0_MIN = 0.2
-R0_MAX = 6.0
-
-for i in range(X):
-    print(f"running {i}")
-
-    # ----- sample gamma and target R0 -----
+    # ----- Sample random parameters -----
     gamma = np.random.uniform(GAMMA_MIN, GAMMA_MAX)
-    R0_target = np.random.uniform(R0_MIN, R0_MAX)
-    beta = R0_target * gamma
+    R0 = np.random.uniform(R0_MIN, R0_MAX)
+    beta = min(R0 * gamma, 0.95)
 
-    # cap beta so it behaves like a probability
-    beta = min(beta, 0.95)
-
-    # ----- sample population and initial conditions -----
     N = np.random.randint(POP_MIN, POP_MAX + 1)
-
-    # initial infected = 1%–10% of population
     I0 = max(1, int(np.random.uniform(0.01, 0.10) * N))
     S0 = N - I0
-
     generations = np.random.randint(GEN_MIN, GEN_MAX)
 
-    # run full simulation first to ensure it doesn't fail
-    result = os.popen(
-        f'python3 simple.py --S {S0} --I {I0} --beta {beta} '
-        f'--gamma {gamma} --generations {generations} '
-        f'--sample 1 --minI 0'
-    ).read().strip().split()
+    total_pop = S0 + I0
 
-    if len(result) != 4:
-        continue
+    # ----- Full simulation -----
+    try:
+        history, _ = simulate_sis(
+            n=total_pop,
+            m=I0,
+            beta=beta,
+            gamma=gamma,
+            generations=generations,
+            x=0  # allow any last-gen infected
+        )
+    except Exception:
+        return None
 
     infected_vals = []
 
-    # now run subsimulations for each time point
+    # ----- Subsimulations at chosen time points -----
     for tp in time_points:
         t = max(1, int(tp * generations))
 
-        rc = os.popen(
-            f'python3 simple.py --S {S0} --I {I0} --beta {beta} '
-            f'--gamma {gamma} --generations {t} '
-            f'--sample 1 --minI 0'
-        ).read().strip().split()
+        try:
+            hist_tp, _ = simulate_sis(
+                n=total_pop,
+                m=I0,
+                beta=beta,
+                gamma=gamma,
+                generations=t,
+                x=0
+            )
+        except Exception:
+            return None
 
-        if len(rc) != 4:
-            infected_vals = []
-            break
+        infected_vals.append(np.sum(hist_tp[-1]))
 
-        infected_vals.append(float(rc[3]))
-
+    # Only return valid rows
     if len(infected_vals) == len(time_points):
-        row = [generations, N] + infected_vals + [beta, gamma]
-        data.append(row)
+        return [generations, N] + infected_vals + [beta, gamma]
 
-header = (
-    "generations,population,"
-    + ",".join([f"infected_t{int(tp*100)}" for tp in time_points])
-    + ",beta,gamma"
-)
+    return None
 
-np.savetxt(
-    "training_data_with_time.csv",
-    data,
-    delimiter=",",
-    header=header,
-    comments=""
-)
+
+def main():
+    workers = cpu_count()
+    print(f"Using {workers} cores.")
+
+    with Pool(workers) as pool:
+        results = pool.map(run_single_sim, range(X))
+
+    # Filter failed runs
+    results = [r for r in results if r is not None]
+
+    header = (
+        "generations,population,"
+        + ",".join([f"infected_t{int(tp*100)}" for tp in time_points])
+        + ",beta,gamma"
+    )
+
+    np.savetxt(
+        "training_data_with_time.csv",
+        results,
+        delimiter=",",
+        header=header,
+        comments=""
+    )
+
+
+if __name__ == "__main__":
+    main()
