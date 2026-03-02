@@ -57,6 +57,80 @@ def simulate_sis(n, m, beta, gamma, generations, x):
     raise ValueError(f"Condition not met after {max_attempts} attempts.")
 
 
+def simulate_sir(n, m, beta, gamma, generations, x=0):
+    """
+    Simulates an SIR model (S -> I -> R, where R stays R).
+
+    State encoding:
+      0 = Susceptible (S)
+      1 = Infected (I)
+      2 = Recovered (R)
+
+    Parameters:
+        n (int): Total population size.
+        m (int): Initial number of infected individuals.
+        beta (float): Infection rate.
+        gamma (float): Recovery rate.
+        generations (int): Number of generations to simulate.
+        x (int): Minimum number of infected individuals in the final generation (optional filter).
+
+    Returns:
+        history (list of np.array): List of population states over generations.
+        relationships (list of np.array): Parentage relationships between generations.
+    """
+    attempts = 0
+    max_attempts = 1000
+
+    while attempts < max_attempts:
+        # initialize: m infected, rest susceptible, none recovered
+        population = np.zeros(n, dtype=int)
+        population[:m] = 1  # infected
+        history = [population.copy()]
+        relationships = []
+
+        for _ in range(generations):
+            new_population = np.zeros(n, dtype=int)
+
+            parentage = np.random.choice(range(n), size=n, replace=True)
+            parentage.sort()
+
+            I_count = np.sum(population == 1)
+            infection_probability = beta * (I_count / n)
+
+            for i in range(n):
+                parent_state = population[parentage[i]]
+
+                if parent_state == 1:
+                    # parent infected -> child inherits infected unless recovery happens
+                    if np.random.random() < gamma:
+                        new_population[i] = 2  # recovered
+                    else:
+                        new_population[i] = 1  # stays infected
+
+                elif parent_state == 0:
+                    # parent susceptible -> may get infected by force of infection
+                    if np.random.random() < infection_probability:
+                        new_population[i] = 1
+                    else:
+                        new_population[i] = 0
+
+                else:
+                    # parent recovered -> stays recovered
+                    new_population[i] = 2
+
+            history.append(new_population)
+            relationships.append(parentage)
+            population = new_population
+
+        # optional filter: require at least x infected at end
+        if np.sum(history[-1] == 1) >= x:
+            return history, relationships
+
+        attempts += 1
+
+    raise ValueError(f"Condition not met after {max_attempts} attempts.")
+
+
 def new_equivalence_class(tsi,tsi2):
         s1 = list(set(tsi))
         s2 = list(set(tsi2))

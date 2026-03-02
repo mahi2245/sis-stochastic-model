@@ -1,0 +1,14 @@
+step 1 - generate synthetic data
+	input: X (number of simulations)
+	code: src/runX.py calls simulate_sir() repeatedly, records infected/recovered at 6 timepoints, and writes a CSV with features (generations, population, infected_t*, recovered_t*) and labels (beta, gamma)
+	output: data/generated/training_data_with_time.csv
+
+step 2 - train model
+	input: data/training_data_with_time.csv
+	code: src/train.py normalizes gen/pop and converts infected/recovered to proportions, scales beta/gamma to [0,1] using min/max from the dataset, trains SIRNet(14->2), and saves a checkpoint dict containing model_state and min/max scalers
+	output: models/sir_model_best.pth
+
+step 3 - predict parameters
+	input: a trained model (sir_model_best.pth) + a single observation (gens, pop, !25, !75, R25, R75)
+	code: src/predict.py approximates missing timepoints from 25/75, builds 14 normalized features, predicts scaled beta.gamma, unscales using checkpoint min/max, and prints beta, gamma, R0
+	output: console prints (beta, gamma, R0)

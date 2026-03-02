@@ -7,12 +7,12 @@ import torch.nn.functional as F
 from sklearn.model_selection import train_test_split
 
 # --------------------------------------------------------
-# 1. MODEL WITH 8 INPUT FEATURES (6 infected timepoints)
+# 1. MODEL WITH 14 INPUT FEATURES (gen, pop, 6 infected, 6 recovered)
 # --------------------------------------------------------
-class SISNet(nn.Module):
+class SIRNet(nn.Module):
     def __init__(self):
-        super(SISNet, self).__init__()
-        self.fc1 = nn.Linear(8, 32)
+        super(SIRNet, self).__init__()
+        self.fc1 = nn.Linear(14, 32)
         self.fc2 = nn.Linear(32, 32)
         self.fc3 = nn.Linear(32, 16)
         self.fc4 = nn.Linear(16, 2)
@@ -37,12 +37,11 @@ if __name__ == "__main__":
     generations = df["generations"].values.astype(np.float32)
     population  = df["population"].values.astype(np.float32)
 
-    infected_cols = [
-        "infected_t25", "infected_t75",
-        "infected_t10", "infected_t60",
-        "infected_t50", "infected_t100"
-    ]
+    infected_cols = ["infected_t10","infected_t25","infected_t50","infected_t60","infected_t75","infected_t100"]
     infected = df[infected_cols].values.astype(np.float32)
+
+    recovered_cols = ["recovered_t10","recovered_t25","recovered_t50","recovered_t60","recovered_t75","recovered_t100"]
+    recovered = df[recovered_cols].values.astype(np.float32)
 
     beta = df["beta"].values.astype(np.float32)
     gamma = df["gamma"].values.astype(np.float32)
@@ -51,12 +50,14 @@ if __name__ == "__main__":
     gen_norm = generations / 500.0
     pop_norm = population / 20000.0
     infected_norm = infected / (population[:, None] + 1e-6)
+    recovered_norm = recovered / (population[:, None] + 1e-6)
 
     # build feature matrix
     X = np.concatenate([
         gen_norm[:, None],
         pop_norm[:, None],
-        infected_norm
+        infected_norm,
+        recovered_norm
     ], axis=1).astype(np.float32)
 
     # scale targets
@@ -82,7 +83,7 @@ if __name__ == "__main__":
     # ----------------------------------------------------
     # TRAINING LOOP WITH BEST-MODEL TRACKING
     # ----------------------------------------------------
-    model = SISNet()
+    model = SIRNet()
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.0008)
 
@@ -123,7 +124,7 @@ if __name__ == "__main__":
         "gamma_min": gamma_min,
         "gamma_max": gamma_max,
         "best_val_loss": best_val_loss
-    }, "sis_model_best.pth")
+    }, "sir_model_best.pth")
 
     print("Training complete.")
     print(f"Lowest validation loss: {best_val_loss:.6f}")
