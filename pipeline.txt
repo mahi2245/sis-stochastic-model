@@ -1,14 +1,156 @@
-step 1 - generate synthetic data
-	input: X (number of simulations)
-	code: src/runX.py calls simulate_sir() repeatedly, records infected/recovered at 6 timepoints, and writes a CSV with features (generations, population, infected_t*, recovered_t*) and labels (beta, gamma)
-	output: data/generated/training_data_with_time.csv
+================================================================================
+PIPELINE NOTES
+================================================================================
+All commands are run from the project root (sis-stochastic-model/).
+See README.md for quick-reference usage. This file contains technical detail.
+================================================================================
 
-step 2 - train model
-	input: data/training_data_with_time.csv
-	code: src/train.py normalizes gen/pop and converts infected/recovered to proportions, scales beta/gamma to [0,1] using min/max from the dataset, trains SIRNet(14->2), and saves a checkpoint dict containing model_state and min/max scalers
-	output: models/sir_model_best.pth
 
-step 3 - predict parameters
-	input: a trained model (sir_model_best.pth) + a single observation (gens, pop, !25, !75, R25, R75)
-	code: src/predict.py approximates missing timepoints from 25/75, builds 14 normalized features, predicts scaled beta.gamma, unscales using checkpoint min/max, and prints beta, gamma, R0
-	output: console prints (beta, gamma, R0)
+--------------------------------------------------------------------------------
+PART 1: SIR PARAMETER ESTIMATION PIPELINE
+--------------------------------------------------------------------------------
+
+STEP 1 — Generate Synthetic Training Data
+------------------------------------------
+Command:  python src/runX.py <X>
+Input:    X (number of simulations, passed as CLI argument)
+Output:   data/training_data_with_time.csv
+
+What it does:
+  - Samples random epidemic parameters per simulation:
+      gamma   ~ Uniform(0.05, 0.5)
+      R0      ~ Uniform(0.2, 6.0)
+      beta    = min(R0 * gamma, 0.95)
+      N       ~ randint(500, 20000)
+      I0      = Uniform(1%, 10%) * N
+      gens    ~ randint(50, 500)
+  - Runs a full simulate_sir() to validate that the parameters produce a
+    viable outbreak (x=0 filter).
+  - Runs 6 sub-simulations at fractional timepoints [0.25, 0.75, 0.10, 0.60,
+    0.50, 1.0] and records infected and recovered counts at each.
+  - Writes one row per successful simulation to the output CSV.
+
+Output CSV columns:
+  generations, population,
+  infected_t25, infected_t75, infected_t10, infected_t60, infected_t50, infected_t100,
+  recovered_t25, recovered_t75, recovered_t10, recovered_t60, recovered_t50, recovered_t100,
+  beta, gamma
+
+
+STEP 2 — Train Model
+---------------------
+Command:  python src/train.py
+Input:    data/training_data_with_time.csv
+Output:   models/sir_model_best.pth
+
+What it does:
+  - Normalizes features:
+      gen_norm      = generations / 500
+      pop_norm      = population / 20000
+      infected_norm = infected_t* / population   (proportion)
+      recovered_norm= recovered_t* / population  (proportion)
+  - Scales targets to [0, 1] using dataset min/max:
+      beta_scaled  = (beta  - beta_min)  / (beta_max  - beta_min)
+      gamma_scaled = (gamma - gamma_min) / (gamma_max - gamma_min)
+  - Builds feature matrix X of shape (N, 14):
+      [gen_norm, pop_norm, infected x6, recovered x6]
+  - Trains SIRNet (14 → 32 → 32 → 16 → 2, ReLU + sigmoid output) for 2500
+    epochs using Adam (lr=0.0008) with 80/20 train/val split.
+  - Saves the checkpoint with the lowest validation MSE.
+
+Checkpoint dict keys:
+  model_state, beta_min, beta_max, gamma_min, gamma_max, best_val_loss
+
+
+STEP 3 — Predict Parameters
+-----------------------------
+Command:  python src/predict.py <gens> <pop> <I25> <I75> <R25> <R75>
+Input:    models/sir_model_best.pth + a single observation
+Output:   Prints predicted beta, gamma, R0 to stdout
+
+What it does:
+  - Accepts the 4 required timepoints (I25, I75, R25, R75) and approximates
+    the remaining 4:
+        I10  = I25
+        I50  = (I25 + I75) / 2
+        I60  = I75
+        I100 = I75
+        (same pattern for R*)
+  - Builds the same 14-feature normalized vector as training.
+  - Runs SIRNet forward pass, then unscales outputs using checkpoint min/max.
+  - Prints beta, gamma, R0 = beta / gamma.
+
+
+--------------------------------------------------------------------------------
+PART 2: UNCERTAINTY QUANTIFICATION EXPERIMENTS (SIS MODEL)
+--------------------------------------------------------------------------------
+These experiments use the SIS model and SISNet (8 inputs, infected only).
+They are independent of the SIR pipeline above.
+Checkpoint: models/sis_model_best.pth
+Data:       data/training_data_with_time.csv (SIS)
+            data/training_data_with_time_real.csv (used by traditional bootstrap)
+
+EXPERIMENT A — Parametric Bootstrap
+-------------------------------------
+Command:  python experiments/bootstrap_parametric.py
+            --beta <b> --gamma <g> --pop <N> --gens <T> [--B 500]
+Output:   results/bootstrap/bootstrap_results.csv
+
+What it does:
+  - Fixes true beta, gamma, pop, gens for a single hypothetical epidemic.
+  - Generates B independent stochastic SIS replicates under those parameters.
+  - Feeds each replicate through SISNet and collects (beta_hat, gamma_hat, r0_hat).
+  - Reports mean, std, and percentile 95% CI across the B predictions.
+
+Visualize:
+  python experiments/visualize_bootstrap.py results/bootstrap/bootstrap_results.csv
+  Output: results/bootstrap/bootstrap_results_plot.png
+
+
+EXPERIMENT B — Traditional (Non-Parametric) Bootstrap
+-------------------------------------------------------
+Command:  python experiments/traditional_bootstrap.py [--B 20] [--epochs 200]
+Output:   results/traditional_bootstrap/traditional_bootstrap_results.csv
+
+What it does:
+  - Holds out a fixed 20% test set.
+  - Trains B SISNet models on bootstrap resamples of the remaining training data.
+  - For each test sample, collects B predictions and computes a per-sample
+    95% percentile CI.
+  - Reports coverage, bias, MAE, RMSE, and mean CI width.
+
+Visualize:
+  python experiments/visualize_traditional_bootstrap.py \
+      results/traditional_bootstrap/traditional_bootstrap_results.csv
+  Output: results/traditional_bootstrap/traditional_bootstrap_results_plot.png
+
+
+EXPERIMENT C — Delete-d Jackknife
+-----------------------------------
+Command:  python experiments/jackknife.py [--delete 10] [--epochs 500]
+Output:   results/jackknife/jackknife_results.csv
+
+What it does:
+  - Randomly shuffles the dataset and partitions it into blocks of d samples.
+  - For each block: trains SISNet on the remaining N-d samples, predicts on
+    the held-out d, records errors.
+  - Reports bias, MAE, and RMSE across all held-out predictions.
+
+Visualize:
+  python experiments/visualize_jackknife.py results/jackknife/jackknife_results.csv
+  Output: results/jackknife/jackknife_results_plot.png
+
+
+--------------------------------------------------------------------------------
+ARCHIVE
+--------------------------------------------------------------------------------
+The archive/ folder contains early SIS prototype scripts that are no longer
+part of any active pipeline:
+
+  test.py              — early gauge-chart visualizer for SISNet (4-input model)
+  verify_predictions.py— SIS trajectory verification against ODE (not updated to SIR)
+  model.py             — standalone stochastic SIS vs ODE comparison plot
+  ode.py               — standalone SIS ODE solver and plot
+
+These are kept for reference only. Do not rely on them for any current work.
+================================================================================
